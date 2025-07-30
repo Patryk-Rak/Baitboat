@@ -23,7 +23,8 @@ static const uint16_t SCREENBUFFER_SIZE_PIXELS = SCREEN_WIDTH * SCREEN_HEIGHT / 
 static lv_color_t screen_buffer[SCREENBUFFER_SIZE_PIXELS]; // Bufor ekranu dla LVGL
 
 const int JOY_MIN_X = 0, JOY_MAX_X = 255, JOY_MIN_Y = 0, JOY_MAX_Y = 255; // Zakresy joysticka
-const int JOY_DEADZONE_LOW = 5, JOY_DEADZONE_HIGH = 5; // Martwa strefa joysticka
+const int JOY_DEADZONE_LOW = 1, JOY_DEADZONE_HIGH = 1; // Martwa strefa joysticka
+const int JOY_CENTER = 128; // Środek zakresu joysticka
 
 static int progress_value = 0; // Postęp ładowania
 static bool is_loading = true, was_connected = false; // Statusy ładowania i połączenia
@@ -34,9 +35,11 @@ static lv_obj_t* popup = nullptr; // Popup na ekranie
 static lv_timer_t *bar_timer = nullptr, *connection_timer = nullptr; // Timery LVGL
 
 // Struktura do przesyłania danych przez ESP-NOW
-typedef struct {
-    int x;
-    int y;
+typedef struct __attribute__((packed)) {
+    uint8_t up;
+    uint8_t down;
+    uint8_t left;
+    uint8_t right;
     bool trigger;
 } struct_message;
 
@@ -162,29 +165,43 @@ static void update_speed_values(lv_timer_t*) {
         lv_bar_set_value(ui_SpeedBarRight, 0, LV_ANIM_ON);
         return;
     }
-
     nunchuk.update();
     joy_x = nunchuk.joyX();
     joy_y = nunchuk.joyY();
     trigger = nunchuk.buttonZ();
     Serial.printf("Raw joyX: %d\nRaw joyY: %d\nTrigger: %s\n", joy_x, joy_y, trigger ? "Pressed" : "Released");
 
-    // Mapowanie wartości joysticka na zakres 0-100
-    int mapped_value_x = (joy_x < JOY_MIN_X + JOY_DEADZONE_LOW) ? 0 :
-                         (joy_x > JOY_MAX_X - JOY_DEADZONE_HIGH) ? 100 :
-                         map(joy_x, JOY_MIN_X + JOY_DEADZONE_LOW, JOY_MAX_X - JOY_DEADZONE_HIGH, 0, 100);
-    mapped_value_x = constrain(mapped_value_x, 0, 100);
+    // Mapowanie wartości joysticka na zakres 0-255 z uwzględnieniem martwej strefy
+    uint8_t up_value = 0, down_value = 0, left_value = 0, right_value = 0;
+    // Oś Y: up i down
+    if (joy_y > JOY_CENTER + JOY_DEADZONE_HIGH) {
+        up_value = map(joy_y, JOY_CENTER + JOY_DEADZONE_HIGH, JOY_MAX_Y, 0, 255);
+        down_value = 0;
+    } else if (joy_y < JOY_CENTER - JOY_DEADZONE_LOW) {
+        down_value = map(joy_y, JOY_CENTER - JOY_DEADZONE_LOW, JOY_MIN_Y, 0, 255);
+        up_value = 0;
+    } else {
+        up_value = 0;
+        down_value = 0;
+    }
 
-    int mapped_value_y = (joy_y < JOY_MIN_Y + JOY_DEADZONE_LOW) ? 0 :
-                         (joy_y > JOY_MAX_Y - JOY_DEADZONE_HIGH) ? 100 :
-                         map(joy_y, JOY_MIN_Y + JOY_DEADZONE_LOW, JOY_MAX_Y - JOY_DEADZONE_HIGH, 0, 100);
-    mapped_value_y = constrain(mapped_value_y, 0, 100);
+    // Oś X: left i right
+    if (joy_x > JOY_CENTER + JOY_DEADZONE_HIGH) {
+        right_value = map(joy_x, JOY_CENTER + JOY_DEADZONE_HIGH, JOY_MAX_X, 0, 255);
+        left_value = 0;
+    } else if (joy_x < JOY_CENTER - JOY_DEADZONE_LOW) {
+        left_value = map(joy_x, JOY_CENTER - JOY_DEADZONE_LOW, JOY_MIN_X, 0, 255);
+        right_value = 0;
+    } else {
+        left_value = 0;
+        right_value = 0;
+    }
 
-    // Obliczanie wartości pasków
-    int up_value    = max(0, mapped_value_y - 50) * 2;
-    int down_value  = (50 - min(mapped_value_y, 50)) * 2;
-    int left_value  = (50 - min(mapped_value_x, 50)) * 2;
-    int right_value = max(0, mapped_value_x - 50) * 2;
+    // Ustawienie zakresu pasków prędkości na 0-255
+    lv_bar_set_range(ui_SpeedBarUp, 0, 255);
+    lv_bar_set_range(ui_SpeedBarDown, 0, 255);
+    lv_bar_set_range(ui_SpeedBarLeft, 0, 255);
+    lv_bar_set_range(ui_SpeedBarRight, 0, 255);
 
     // Aktualizacja pasków prędkości
     lv_bar_set_value(ui_SpeedBarUp, up_value, LV_ANIM_ON);
@@ -193,8 +210,10 @@ static void update_speed_values(lv_timer_t*) {
     lv_bar_set_value(ui_SpeedBarRight, right_value, LV_ANIM_ON);
 
     // Wysyłanie danych przez ESP-NOW
-    data.x = joy_x;
-    data.y = joy_y;
+    data.up = up_value;
+    data.down = down_value;
+    data.left = left_value;
+    data.right = right_value;
     data.trigger = trigger;
     esp_err_t result = esp_now_send(receiverAddress, (uint8_t*)&data, sizeof(data));
     Serial.println(result == ESP_OK ? "Sent with success" : "Error sending the data");
