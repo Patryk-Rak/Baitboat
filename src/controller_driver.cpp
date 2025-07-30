@@ -41,7 +41,7 @@ typedef struct {
 } struct_message;
 
 struct_message data; // Dane do wysyłki
-uint8_t receiverAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Adres odbiorcy ESP-NOW
+uint8_t receiverAddress[] = {0xA8, 0x48, 0xFA, 0x6B, 0xB4, 0xAC}; // Adres odbiorcy ESP-NOW
 
 // Obiekty sprzętowe
 TFT_eSPI tft = TFT_eSPI(SCREEN_WIDTH, SCREEN_HEIGHT); // Ekran TFT
