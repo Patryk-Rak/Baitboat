@@ -153,7 +153,7 @@ static void check_connection(lv_timer_t*) {
 }
 
 // Aktualizacja pasków prędkości i wysyłka danych przez ESP-NOW
-static void update_speed_bars(lv_timer_t*) {
+static void update_speed_values(lv_timer_t*) {
     if (!nunchuk.connect()) {
         lv_label_set_text(ui_BatteryText, "N/A");
         lv_bar_set_value(ui_SpeedBarUp, 0, LV_ANIM_ON);
@@ -282,7 +282,7 @@ void setup() {
 
     bar_timer = lv_timer_create(loading_screen, 100, nullptr);         // Timer ładowania
     connection_timer = lv_timer_create(check_connection, 500, nullptr); // Timer sprawdzania połączenia
-    lv_timer_t* speed_timer = lv_timer_create(update_speed_bars, 100, nullptr); // Timer pasków prędkości
+    lv_timer_t* speed_timer = lv_timer_create(update_speed_values, 100, nullptr); // Timer pasków prędkości
 
     Serial.println("Setup done");
 }
