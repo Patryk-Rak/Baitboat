@@ -17,6 +17,7 @@
 #include <esp_now.h>
 #include <WiFi.h>
 
+
 // Nagłówek biblioteki LVGL
 #include "lvgl.h"
 
@@ -71,6 +72,7 @@ uint8_t receiverAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};  // Placeholde
 // Konfiguracja sprzętowa
 // ============================================================================
 
+																						 
 TFT_eSPI tft = TFT_eSPI(SCREEN_WIDTH, SCREEN_HEIGHT);  // Inicjalizacja wyświetlacza TFT
 
 // Konfiguracja ekranu dotykowego (XPT2046)
@@ -115,7 +117,7 @@ void my_display_flush(lv_display_t* disp, const lv_area_t* area, uint8_t* pixelm
     uint32_t height = area->y2 - area->y1 + 1;  // Obliczenie wysokości obszaru
     tft.startWrite();  // Rozpoczęcie operacji zapisu
     tft.setAddrWindow(area->x1, area->y1, width, height);  // Ustawienie okna adresowego
-    tft.pushColors((uint16_t*)pixelmap, width * height, true);  // Wysłanie pikseli
+    tft.pushColors((uint16_t*)pixelmap, width * height, true);  // Wysłanie pikseli															
     tft.endWrite();  // Zakończenie operacji zapisu
     lv_disp_flush_ready(disp);  // Powiadomienie LVGL o zakończeniu flush
 }
@@ -162,30 +164,6 @@ void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
     Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
 }
 
-/**
- * Funkcja wysyłająca dane joysticka przez ESP-NOW
- * @param timer Wskaźnik na timer LVGL
- */
-static void send_espnow_data(lv_timer_t* timer) {
-    if (!nunchuk.connect()) return;  // Pominiecie, jeśli brak połączenia z Nunchukiem
-
-    nunchuk.update();  // Aktualizacja danych z Nunchuka
-    joy_x = nunchuk.joyX();  // Pobranie wartości osi X
-    joy_y = nunchuk.joyY();  // Pobranie wartości osi Y
-    trigger = nunchuk.buttonZ();  // Pobranie stanu przycisku trigger (buttonZ)
-
-    data.x = joy_x;      // Przypisanie wartości do struktury
-    data.y = joy_y;
-    data.trigger = trigger;
-
-    // Wysłanie danych przez ESP-NOW
-    esp_err_t result = esp_now_send(receiverAddress, (uint8_t*)&data, sizeof(data));
-    if (result == ESP_OK) {
-        Serial.println("Sent with success");
-    } else {
-        Serial.println("Error sending the data");
-    }
-}
 
 // ============================================================================
 // Funkcje interfejsu użytkownika
@@ -195,7 +173,7 @@ static void send_espnow_data(lv_timer_t* timer) {
  * Funkcja aktualizująca pasek postępu na ekranie ładowania
  * @param timer Wskaźnik na timer LVGL
  */
-static void set_value_task(lv_timer_t* timer) {
+static void loading_screen(lv_timer_t* timer) {
     lv_bar_set_range(ui_LoadingBar, 0, 100);  // Ustawienie zakresu paska postępu
     progress_value += random(0, 8);           // Zwiększenie wartości postępu losowo
     lv_bar_set_value(ui_LoadingBar, progress_value, LV_ANIM_ON);  // Aktualizacja paska z animacją
@@ -207,10 +185,10 @@ static void set_value_task(lv_timer_t* timer) {
         was_connected = is_connected;         // Aktualizacja stanu poprzedniego połączenia
         if (is_connected) {                   // Jeśli Nunchuk jest podłączony
             Serial.println("Loading complete, Nunchuk connected, switching to ui_Menu");
-            _ui_screen_change(&ui_Menu, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_Menu_screen_init);
+            _ui_screen_change(&ui_Menu, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, &ui_Menu_screen_init);
         } else {                              // Jeśli Nunchuk jest odłączony
             Serial.println("Loading complete, Nunchuk disconnected, switching to ui_Connect");
-            _ui_screen_change(&ui_Connect, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_Connect_screen_init);
+            _ui_screen_change(&ui_Connect, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, &ui_Connect_screen_init);
             unplugged_Animation(ui_Unplugged, 0); // Uruchomienie animacji rozłączenia
         }
     }
@@ -225,11 +203,11 @@ static void check_connection(lv_timer_t* timer) {
     bool is_connected = nunchuk.connect();  // Sprawdzenie połączenia
     if (is_connected && !was_connected) {   // Jeśli połączenie nawiązano
         Serial.println("Nunchuk connected, switching to ui_Menu");
-        _ui_screen_change(&ui_Menu, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_Menu_screen_init);
+        _ui_screen_change(&ui_Menu, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 200, 0, &ui_Menu_screen_init);
         unplugged_Animation(ui_Unplugged, 0); // Wyłączenie animacji rozłączenia
     } else if (!is_connected && was_connected) {  // Jeśli połączenie utracono
         Serial.println("Nunchuk disconnected, switching to ui_Connect");
-        _ui_screen_change(&ui_Connect, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_Connect_screen_init);
+        _ui_screen_change(&ui_Connect, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 200, 0, &ui_Connect_screen_init);
         unplugged_Animation(ui_Unplugged, 0); // Uruchomienie animacji rozłączenia
     }
     was_connected = is_connected;  // Aktualizacja stanu połączenia
@@ -282,12 +260,21 @@ static void update_speed_bars(lv_timer_t* timer) {
     lv_bar_set_value(ui_SpeedBarLeft, left_value, LV_ANIM_ON);  // Aktualizacja paska lewo
     lv_bar_set_value(ui_SpeedBarRight, right_value, LV_ANIM_ON); // Aktualizacja paska prawo
 
+    // Wysyłanie danych przez ESP-NOW (integracja z send_espnow_data)
+    data.x = joy_x;
+    data.y = joy_y;
+    data.trigger = trigger;
+    esp_err_t result = esp_now_send(receiverAddress, (uint8_t*)&data, sizeof(data));
+    if (result == ESP_OK) {
+        Serial.println("Sent with success");
+    } else {
+        Serial.println("Error sending the data");
+    }
+
     // Aktualizacja etykiety baterii (symulacja poziomu baterii)
-    char batteryText[8];
-    sprintf(batteryText, "%d%%", random(0, 100));
-    lv_label_set_text(ui_BatteryText, batteryText);
-																										  
- 
+    // char batteryText[8];
+    // sprintf(batteryText, "%d%%", random(0, 100));
+    // lv_label_set_text(ui_BatteryText, batteryText);
 
     // Obsługa triggera na ekranie Menu
     if (trigger && lv_scr_act() == ui_Menu) {
@@ -323,6 +310,8 @@ void setup() {
         Serial.println("Error initializing ESP-NOW");
         return;
     }
+
+
     esp_now_register_send_cb(OnDataSent);  // Rejestracja callbacku wysyłania
 
     // Dodanie odbiornika (drugi ESP32)
@@ -349,6 +338,7 @@ void setup() {
     tft.fillScreen(TFT_BLACK);  // Wypełnienie ekranu czarnym kolorem
     delay(10);  // Krótkie opóźnienie
     tft.setRotation(1);  // Ustawienie orientacji ekranu
+																			   
     tft.fillScreen(TFT_BLACK);  // Ponowne wyczyszczenie ekranu
     delay(10);  // Krótkie opóźnienie
 
@@ -373,11 +363,9 @@ void setup() {
     ui_init();  // Inicjalizacja wszystkich ekranów UI
     lv_timer_handler();  // Wykonanie początkowej obsługi timerów
 
-    bar_timer = lv_timer_create(set_value_task, 50, nullptr);  // Timer dla paska postępu (50 ms)
+    bar_timer = lv_timer_create(loading_screen, 100, nullptr);  // Timer dla paska postępu (100 ms)
     connection_timer = lv_timer_create(check_connection, 500, nullptr);  // Timer dla sprawdzania połączenia (500 ms)
-    lv_timer_t* speed_timer = lv_timer_create(update_speed_bars, 50, nullptr);  // Timer dla pasków prędkości (50 ms)
-    espnow_timer = lv_timer_create(send_espnow_data, 100, nullptr);  // Timer dla wysyłania danych ESP-NOW (100 ms)
-
+    lv_timer_t* speed_timer = lv_timer_create(update_speed_bars, 50, nullptr);  // Timer dla pasków prędkości (35 ms)
     Serial.println("Setup done");  // Potwierdzenie zakończenia inicjalizacji
 }
 
