@@ -3,6 +3,7 @@
 // ============================================================================
 #include <esp_now.h>
 #include <WiFi.h>
+#include <ESP32Servo.h>
 
 // ============================================================================
 // Definicje stałych i zmiennych globalnych
@@ -16,23 +17,26 @@ const int ENB_PIN = 12; // Pin PWM dla prędkości silnika prawego
 const int IN3_PIN = 13; // Pin kierunku 1 dla silnika prawego
 const int IN4_PIN = 15; // Pin kierunku 2 dla silnika prawego
 
-// Konfiguracja PWM dla ESP32
-const int PWM_FREQ = 5000;         // Częstotliwość PWM (5 kHz dla płynnej pracy silników)
-const int PWM_RESOLUTION = 8;      // Rozdzielczość PWM (8 bitów, wartości 0-255)
+// Piny i konfiguracja dla serwomechanizmu SG90
+const int SERVO_PIN = 18; // Pin do sterowania serwem (zmień, jeśli używasz innego pinu)
+
+// Konfiguracja PWM dla silników
+const int PWM_FREQ = 5000;         // Częstotliwość PWM dla silników (5 kHz)
+const int PWM_RESOLUTION = 8;      // Rozdzielczość PWM dla silników (8 bitów, 0-255)
 const int PWM_CHANNEL_ENA = 0;     // Kanał PWM dla pinu ENA
 const int PWM_CHANNEL_ENB = 1;     // Kanał PWM dla pinu ENB
 const int MIN_PWM = 50;            // Minimalna wartość PWM, aby silniki ruszyły
 const int SMOOTHING_STEP = 10;     // Maksymalna zmiana prędkości na iterację (soft start/end)
-const int UPDATE_INTERVAL = 80;    // Interwał aktualizacji prędkości w ms
+const int UPDATE_INTERVAL = 10;    // Interwał aktualizacji prędkości w ms
 
 // Struktura danych do odbierania przez ESP-NOW
 // Użyto atrybutu packed, aby zapewnić spójny rozmiar struktury
-typedef struct __attribute__((packed)) struct_message {
+typedef struct __attribute__((packed)) {
     uint8_t up;     // Prędkość do przodu (0-255)
     uint8_t down;   // Prędkość do tyłu (0-255)
     uint8_t left;   // Skręt w lewo (0-255)
     uint8_t right;  // Skręt w prawo (0-255)
-    bool trigger;   // Stan przycisku wyzwalającego (true/false)
+    bool trigger;   // Stan przycisku wyzwalającego (true/false) dla servo
 } struct_message;
 
 // Zmienna przechowująca odebrane dane
@@ -42,24 +46,12 @@ struct_message receivedData;
 int currentSpeed1 = 0; // Bieżąca prędkość silnika lewego
 int currentSpeed2 = 0; // Bieżąca prędkość silnika prawego
 
-// Oczekiwany rozmiar struktury danych (4 * uint8_t + 1 * bool = 5 bajtów)
-const size_t EXPECTED_SIZE = 5;
+// Obiekt serwomechanizmu
+Servo servo;
 
 // ============================================================================
 // Funkcje debugujące
 // ============================================================================
-
-/**
- * Wyświetla rozmiar struktury danych (aktywne w trybie DEBUG)
- */
-#ifdef DEBUG
-void debugStructSize() {
-    Serial.print("Rozmiar struktury struct_message: ");
-    Serial.println(sizeof(struct_message));
-    Serial.print("Oczekiwany rozmiar: ");
-    Serial.println(EXPECTED_SIZE);
-}
-#endif
 
 /**
  * Wyświetla wartości prędkości dla debugowania
@@ -85,8 +77,18 @@ void debugMotorSpeeds(int baseSpeed, int turnAdjust, int targetSpeed1, int curre
     Serial.println(currentSpeed2);
 }
 
+/**
+ * Wyświetla stan sterowania serwem (debugowanie)
+ * @param angle Kąt ustawienia serwa w stopniach
+ */
+void debugServoState(int angle) {
+    Serial.print("Servo ustawione na: ");
+    Serial.print(angle);
+    Serial.println(" stopni");
+}
+
 // ============================================================================
-// Funkcje sterowania silnikami
+// Funkcje sterowania silnikami i serwem
 // ============================================================================
 
 /**
@@ -136,59 +138,71 @@ void setMotor(int channel, int in1, int in2, int speed) {
     ledcWrite(channel, absSpeed);
 }
 
+/**
+ * Aktualizuje stan serwomechanizmu
+ */
+void updateServo() {
+    if (receivedData.trigger) {
+        servo.write(90);
+        debugServoState(90);
+        Serial.println("Trigger aktywny, servo na 90°");
+    } else {
+        servo.write(0);
+        debugServoState(0);
+        Serial.println("Trigger nieaktywny, servo na 0°");
+    }
+}
+
 // ============================================================================
 // Funkcje ESP-NOW
 // ============================================================================
 
 /**
- * Przetwarza odebrane dane i steruje silnikami
+ * Przetwarza odebrane dane i steruje silnikami oraz serwem
  * @param msg Odebrana struktura danych z wartościami up, down, left, right, trigger
  */
 void handleReceivedData(const struct_message& msg) {
+    receivedData = msg; // Aktualizacja danych
+
     // Wyświetlanie odebranych danych w monitorze szeregowym
     Serial.print("Odebrano: up = ");
-    Serial.print(msg.up);
+    Serial.print(receivedData.up);
     Serial.print(", down = ");
-    Serial.print(msg.down);
+    Serial.print(receivedData.down);
     Serial.print(", left = ");
-    Serial.print(msg.left);
+    Serial.print(receivedData.left);
     Serial.print(", right = ");
-    Serial.print(msg.right);
+    Serial.print(receivedData.right);
     Serial.print(", trigger = ");
-    Serial.println(msg.trigger ? "true" : "false");
+    Serial.println(receivedData.trigger ? "true" : "false");
 
-    if (msg.trigger) {
-        // Zatrzymanie silników, gdy trigger jest aktywny
-        currentSpeed1 = 0;
-        currentSpeed2 = 0;
-        setMotor(PWM_CHANNEL_ENA, IN1_PIN, IN2_PIN, currentSpeed1);
-        setMotor(PWM_CHANNEL_ENB, IN3_PIN, IN4_PIN, currentSpeed2);
-    } else {
-        // Obliczenie prędkości bazowej (różnica między ruchem do przodu a do tyłu)
-        int baseSpeed = msg.up - msg.down;
-        baseSpeed = constrain(baseSpeed, -255, 255); // Ograniczenie do zakresu -255 do 255
+    // Aktualizacja stanu servo
+    updateServo();
 
-        // Obliczenie korekty skrętu (różnica między right a left)
-        int turnAdjust = ((int)msg.right - (int)msg.left) / 2;
-        turnAdjust = constrain(turnAdjust, -255, 255); // Ograniczenie do zakresu -255 do 255
+    // Obliczenie prędkości bazowej (różnica między ruchem do przodu a do tyłu)
+    int baseSpeed = receivedData.up - receivedData.down;
+    baseSpeed = constrain(baseSpeed, -255, 255); // Ograniczenie do zakresu -255 do 255
 
-        // Obliczenie docelowych prędkości dla silników
-        int targetSpeed1 = baseSpeed + turnAdjust; // Silnik lewy
-        targetSpeed1 = constrain(targetSpeed1, -255, 255);
-        int targetSpeed2 = baseSpeed - turnAdjust; // Silnik prawy
-        targetSpeed2 = constrain(targetSpeed2, -255, 255);
+    // Obliczenie korekty skrętu (różnica między right a left)
+    int turnAdjust = ((int)receivedData.right - (int)receivedData.left) / 2;
+    turnAdjust = constrain(turnAdjust, -255, 255); // Ograniczenie do zakresu -255 do 255
 
-        // Wygładzanie prędkości dla soft start/end
-        currentSpeed1 = smoothSpeed(currentSpeed1, targetSpeed1);
-        currentSpeed2 = smoothSpeed(currentSpeed2, targetSpeed2);
+    // Obliczenie docelowych prędkości dla silników
+    int targetSpeed1 = baseSpeed + turnAdjust; // Silnik lewy
+    targetSpeed1 = constrain(targetSpeed1, -255, 255);
+    int targetSpeed2 = baseSpeed - turnAdjust; // Silnik prawy
+    targetSpeed2 = constrain(targetSpeed2, -255, 255);
 
-        // Ustawienie prędkości i kierunku dla silników
-        setMotor(PWM_CHANNEL_ENA, IN1_PIN, IN2_PIN, currentSpeed1);
-        setMotor(PWM_CHANNEL_ENB, IN3_PIN, IN4_PIN, currentSpeed2);
+    // Wygładzanie prędkości dla soft start/end
+    currentSpeed1 = smoothSpeed(currentSpeed1, targetSpeed1);
+    currentSpeed2 = smoothSpeed(currentSpeed2, targetSpeed2);
 
-        // Debugowanie prędkości silników
-        debugMotorSpeeds(baseSpeed, turnAdjust, targetSpeed1, currentSpeed1, targetSpeed2, currentSpeed2);
-    }
+    // Ustawienie prędkości i kierunku dla silników
+    setMotor(PWM_CHANNEL_ENA, IN1_PIN, IN2_PIN, currentSpeed1);
+    setMotor(PWM_CHANNEL_ENB, IN3_PIN, IN4_PIN, currentSpeed2);
+
+    // Debugowanie prędkości silników
+    debugMotorSpeeds(baseSpeed, turnAdjust, targetSpeed1, currentSpeed1, targetSpeed2, currentSpeed2);
 }
 
 /**
@@ -227,11 +241,19 @@ void setup() {
     pinMode(IN3_PIN, OUTPUT);
     pinMode(IN4_PIN, OUTPUT);
 
-    // Konfiguracja kanałów PWM dla pinów ENA i ENB
+    // Konfiguracja kanałów PWM dla silników
     ledcSetup(PWM_CHANNEL_ENA, PWM_FREQ, PWM_RESOLUTION);
     ledcSetup(PWM_CHANNEL_ENB, PWM_FREQ, PWM_RESOLUTION);
     ledcAttachPin(ENA_PIN, PWM_CHANNEL_ENA);
     ledcAttachPin(ENB_PIN, PWM_CHANNEL_ENB);
+
+    // Inicjalizacja serwomechanizmu
+    if (!servo.attach(SERVO_PIN)) {
+        Serial.println("Błąd inicjalizacji servo! Sprawdź pin lub zasilanie.");
+    } else {
+        Serial.println("Servo zainicjalizowane poprawnie.");
+        servo.write(0); // Ustawienie domyślnej pozycji (0 stopni)
+    }
 
     // Inicjalizacja Wi-Fi w trybie stacji (STA)
     WiFi.mode(WIFI_STA);
@@ -245,11 +267,6 @@ void setup() {
     // Rejestracja callbacku dla odbierania danych
     esp_now_register_recv_cb(OnDataRecv);
 
-    // Debugowanie rozmiaru struktury, jeśli włączono tryb DEBUG
-    #ifdef DEBUG
-    debugStructSize();
-    #endif
-
     // Potwierdzenie gotowości odbiornika
     Serial.println("Odbiornik gotowy");
 }
@@ -258,6 +275,6 @@ void setup() {
  * Główna pętla programu
  */
 void loop() {
-    // Opóźnienie dla stabilności i aktualizacji wygładzania prędkości
+    // Opóźnienie dla stabilności
     delay(UPDATE_INTERVAL);
 }
