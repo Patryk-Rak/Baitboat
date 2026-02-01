@@ -160,7 +160,7 @@ void ui_Menu_screen_init(void)
     //Compensating for LVGL9.1 draw crash with bar/slider max value when top-padding is nonzero and right-padding is 0
     if(lv_obj_get_style_pad_top(ui_SpeedBarLeft, LV_PART_MAIN) > 0) lv_obj_set_style_pad_right(ui_SpeedBarLeft,
                                                                                                    lv_obj_get_style_pad_right(ui_SpeedBarLeft, LV_PART_MAIN) + 1, LV_PART_MAIN);
-    ui_Extras = lv_tabview_add_tab(ui_TabView1, "Extras");
+    ui_Extras = lv_tabview_add_tab(ui_TabView1, "GPS");
 
     ui_About = lv_tabview_add_tab(ui_TabView1, "About");
 

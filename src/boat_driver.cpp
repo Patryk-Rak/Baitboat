@@ -26,11 +26,10 @@ const int SERVO_PIN = 18; // Pin do sterowania serwem (zmień, jeśli używasz i
 const int GPS_RX_PIN = 16;           // Pin RX dla GPS (podłączony do TX modułu GPS)
 const int GPS_TX_PIN = 17;           // Pin TX dla GPS (podłączony do RX modułu GPS)
 const long GPS_BAUD = 9600;          // Domyślny baudrate NEO-6M
-const unsigned long GPS_PRINT_INTERVAL = 2000; // Interwał wypisywania danych GPS (ms)
+const unsigned long SERIAL_PRINT_INTERVAL = 2000; // Interwał wypisywania danych na Serial (ms)
 
 TinyGPSPlus gps;
-unsigned long lastGPSPrint = 0;
-unsigned long lastDebugPrint = 0;
+unsigned long lastSerialPrint = 0;
 
 // Konfiguracja PWM dla silników
 const int PWM_FREQ = 5000;         // Częstotliwość PWM dla silników (5 kHz)
@@ -50,10 +49,28 @@ typedef struct __attribute__((packed)) {
     uint8_t left;   // Skręt w lewo (0-255)
     uint8_t right;  // Skręt w prawo (0-255)
     bool trigger;   // Stan przycisku wyzwalającego (true/false) dla servo
-} struct_message;
+} joystick_state;
+
+// Struktura telemetrii GPS do wysyłania do controllera
+typedef struct __attribute__((packed)) {
+    float lat;
+    float lng;
+    float speed_kmph;
+    float altitude_m;
+    float hdop;
+    uint8_t satellites;
+    uint8_t hour, minute, second;
+    bool valid;
+    bool gps_connected;
+} gps_telemetry;
 
 // Zmienna przechowująca odebrane dane
-struct_message receivedData;
+joystick_state receivedData;
+gps_telemetry gpsTelemetry;
+
+// MAC controllera — zapamiętany z pierwszego odebranego pakietu
+uint8_t controllerMAC[6] = {0};
+bool controllerRegistered = false;
 
 // Bieżące prędkości silników dla mechanizmu soft start/end
 int currentSpeed1 = 0; // Bieżąca prędkość silnika lewego
@@ -170,7 +187,7 @@ void updateServo() {
  * Przetwarza odebrane dane i steruje silnikami oraz serwem
  * @param msg Odebrana struktura danych z wartościami up, down, left, right, trigger
  */
-void handleReceivedData(const struct_message& msg) {
+void handleReceivedData(const joystick_state& msg) {
     receivedData = msg; // Aktualizacja danych
 
     // Aktualizacja stanu servo
@@ -197,11 +214,57 @@ void handleReceivedData(const struct_message& msg) {
     // Ustawienie prędkości i kierunku dla silników
     setMotor(PWM_CHANNEL_ENA, IN1_PIN, IN2_PIN, currentSpeed1);
     setMotor(PWM_CHANNEL_ENB, IN3_PIN, IN4_PIN, currentSpeed2);
+}
 
-    // Wypisywanie debugów co GPS_PRINT_INTERVAL (2s), tak samo jak GPS
+/**
+ * Callback wywoływany po odebraniu danych przez ESP-NOW
+ * @param mac_addr Adres MAC nadajnika
+ * @param data Wskaźnik na odebrane dane
+ * @param len Długość odebranych danych
+ */
+void OnDataRecv(const uint8_t* mac_addr, const uint8_t* data, int len) {
+    // Zarejestruj controllera jako peer przy pierwszym odebranym pakiecie
+    if (!controllerRegistered) {
+        memcpy(controllerMAC, mac_addr, 6);
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, controllerMAC, 6);
+        peerInfo.channel = 0;
+        peerInfo.encrypt = false;
+        if (esp_now_add_peer(&peerInfo) == ESP_OK) {
+            controllerRegistered = true;
+            Serial.println("Controller zarejestrowany jako peer ESP-NOW");
+        } else {
+            Serial.println("Błąd rejestracji controllera jako peer");
+        }
+    }
+
+    // Sprawdzenie zgodności rozmiaru odebranych danych
+    if (len == sizeof(joystick_state)) {
+        memcpy(&receivedData, data, sizeof(receivedData));
+        handleReceivedData(receivedData);
+    } else {
+        Serial.print("Błąd: Niezgodność rozmiaru danych. Oczekiwano: ");
+        Serial.print(sizeof(joystick_state));
+        Serial.print(", Odebrano: ");
+        Serial.println(len);
+    }
+}
+
+// ============================================================================
+// Funkcja GPS
+// ============================================================================
+
+/**
+ * Odczytuje dane z modułu GPS NEO-6M i co SERIAL_PRINT_INTERVAL ms wypisuje je na Serial
+ */
+void readGPS() {
+    while (Serial2.available() > 0) {
+        gps.encode(Serial2.read());
+    }
+
     unsigned long now = millis();
-    if (now - lastDebugPrint >= GPS_PRINT_INTERVAL) {
-        lastDebugPrint = now;
+    if (now - lastSerialPrint >= SERIAL_PRINT_INTERVAL) {
+        lastSerialPrint = now;
 
         Serial.print("Odebrano: up = ");
         Serial.print(receivedData.up);
@@ -213,45 +276,6 @@ void handleReceivedData(const struct_message& msg) {
         Serial.print(receivedData.right);
         Serial.print(", trigger = ");
         Serial.println(receivedData.trigger ? "true" : "false");
-
-        debugMotorSpeeds(baseSpeed, turnAdjust, targetSpeed1, currentSpeed1, targetSpeed2, currentSpeed2);
-    }
-}
-
-/**
- * Callback wywoływany po odebraniu danych przez ESP-NOW
- * @param mac_addr Adres MAC nadajnika
- * @param data Wskaźnik na odebrane dane
- * @param len Długość odebranych danych
- */
-void OnDataRecv(const uint8_t* mac_addr, const uint8_t* data, int len) {
-    // Sprawdzenie zgodności rozmiaru odebranych danych
-    if (len == sizeof(struct_message)) {
-        memcpy(&receivedData, data, sizeof(receivedData));
-        handleReceivedData(receivedData);
-    } else {
-        Serial.print("Błąd: Niezgodność rozmiaru danych. Oczekiwano: ");
-        Serial.print(sizeof(struct_message));
-        Serial.print(", Odebrano: ");
-        Serial.println(len);
-    }
-}
-
-// ============================================================================
-// Funkcja GPS
-// ============================================================================
-
-/**
- * Odczytuje dane z modułu GPS NEO-6M i co GPS_PRINT_INTERVAL ms wypisuje je na Serial
- */
-void readGPS() {
-    while (Serial2.available() > 0) {
-        gps.encode(Serial2.read());
-    }
-
-    unsigned long now = millis();
-    if (now - lastGPSPrint >= GPS_PRINT_INTERVAL) {
-        lastGPSPrint = now;
 
         Serial.println("--- GPS ---");
 
@@ -292,6 +316,26 @@ void readGPS() {
         }
 
         Serial.println("--- --- ---");
+
+        // Wysyłanie telemetrii GPS do controllera
+        if (controllerRegistered) {
+            gpsTelemetry.lat = gps.location.isValid() ? gps.location.lat() : 0.0f;
+            gpsTelemetry.lng = gps.location.isValid() ? gps.location.lng() : 0.0f;
+            gpsTelemetry.speed_kmph = gps.speed.isValid() ? gps.speed.kmph() : 0.0f;
+            gpsTelemetry.altitude_m = gps.altitude.isValid() ? gps.altitude.meters() : 0.0f;
+            gpsTelemetry.hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
+            gpsTelemetry.satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;
+            gpsTelemetry.hour = gps.time.isValid() ? gps.time.hour() : 0;
+            gpsTelemetry.minute = gps.time.isValid() ? gps.time.minute() : 0;
+            gpsTelemetry.second = gps.time.isValid() ? gps.time.second() : 0;
+            gpsTelemetry.valid = gps.location.isValid();
+            gpsTelemetry.gps_connected = gps.charsProcessed() > 10;
+
+            esp_err_t result = esp_now_send(controllerMAC, (uint8_t*)&gpsTelemetry, sizeof(gpsTelemetry));
+            if (result != ESP_OK) {
+                Serial.println("Błąd wysyłania telemetrii GPS");
+            }
+        }
     }
 }
 

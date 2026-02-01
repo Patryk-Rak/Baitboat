@@ -34,16 +34,42 @@ static lv_obj_t* popup = nullptr; // Popup na ekranie
 
 static lv_timer_t *bar_timer = nullptr, *connection_timer = nullptr; // Timery LVGL
 
-// Struktura do przesyłania danych przez ESP-NOW
+// Struktura stanu joysticka do przesyłania przez ESP-NOW
 typedef struct __attribute__((packed)) {
     uint8_t up;
     uint8_t down;
     uint8_t left;
     uint8_t right;
     bool trigger;
-} struct_message;
+} joystick_state;
 
-struct_message data; // Dane do wysyłki
+joystick_state data; // Dane do wysyłki
+
+// Struktura telemetrii GPS odbieranej z łódki
+typedef struct __attribute__((packed)) {
+    float lat;
+    float lng;
+    float speed_kmph;
+    float altitude_m;
+    float hdop;
+    uint8_t satellites;
+    uint8_t hour, minute, second;
+    bool valid;
+    bool gps_connected;
+} gps_telemetry;
+
+gps_telemetry lastGPS = {};           // Ostatnie odebrane dane GPS
+volatile bool gpsDataReceived = false; // Flaga nowych danych GPS
+
+// Labele LVGL dla zakładki GPS
+static lv_obj_t* gps_label_status = nullptr;
+static lv_obj_t* gps_label_lat = nullptr;
+static lv_obj_t* gps_label_lng = nullptr;
+static lv_obj_t* gps_label_speed = nullptr;
+static lv_obj_t* gps_label_alt = nullptr;
+static lv_obj_t* gps_label_sat = nullptr;
+static lv_obj_t* gps_label_hdop = nullptr;
+static lv_obj_t* gps_label_time = nullptr;
 uint8_t receiverAddress[] = {0xA8, 0x48, 0xFA, 0x6B, 0xB4, 0xAC}; // Adres odbiorcy ESP-NOW
 
 // Obiekty sprzętowe
@@ -111,6 +137,52 @@ static uint32_t my_tick_get_cb(void) {
 void OnDataSent(const uint8_t*, esp_now_send_status_t status) {
     Serial.print("Last Packet Send Status: ");
     Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
+
+// Callback odbioru danych ESP-NOW (telemetria GPS z łódki)
+void OnDataRecv(const uint8_t* mac_addr, const uint8_t* data, int len) {
+    if (len == sizeof(gps_telemetry)) {
+        memcpy(&lastGPS, data, sizeof(gps_telemetry));
+        gpsDataReceived = true;
+    }
+}
+
+// Timer LVGL aktualizujący labele GPS co 1s
+static void update_gps_labels(lv_timer_t*) {
+    static char buf[64];
+
+    if (lastGPS.gps_connected) {
+        lv_label_set_text(gps_label_status, "GPS Status: Online");
+        lv_obj_set_style_text_color(gps_label_status, lv_color_hex(0x00FF00), LV_PART_MAIN);
+    } else {
+        lv_label_set_text(gps_label_status, "GPS Status: Offline");
+        lv_obj_set_style_text_color(gps_label_status, lv_color_hex(0xFF0000), LV_PART_MAIN);
+    }
+
+    if (lastGPS.valid) {
+        snprintf(buf, sizeof(buf), "LAT: %.6f", lastGPS.lat);
+        lv_label_set_text(gps_label_lat, buf);
+        snprintf(buf, sizeof(buf), "LNG: %.6f", lastGPS.lng);
+        lv_label_set_text(gps_label_lng, buf);
+    } else {
+        lv_label_set_text(gps_label_lat, "LAT: --");
+        lv_label_set_text(gps_label_lng, "LNG: --");
+    }
+
+    snprintf(buf, sizeof(buf), "Speed: %.1f km/h", lastGPS.speed_kmph);
+    lv_label_set_text(gps_label_speed, buf);
+
+    snprintf(buf, sizeof(buf), "Alt: %.1f m", lastGPS.altitude_m);
+    lv_label_set_text(gps_label_alt, buf);
+
+    snprintf(buf, sizeof(buf), "Sat: %d", lastGPS.satellites);
+    lv_label_set_text(gps_label_sat, buf);
+
+    snprintf(buf, sizeof(buf), "HDOP: %.1f", lastGPS.hdop);
+    lv_label_set_text(gps_label_hdop, buf);
+
+    snprintf(buf, sizeof(buf), "UTC: %02d:%02d:%02d", lastGPS.hour, lastGPS.minute, lastGPS.second);
+    lv_label_set_text(gps_label_time, buf);
 }
 
 // ============================================================================
@@ -245,6 +317,7 @@ void setup() {
         return;
     }
     esp_now_register_send_cb(OnDataSent);
+    esp_now_register_recv_cb(OnDataRecv);
 
     // Dodanie odbiorcy ESP-NOW
     esp_now_peer_info_t peerInfo = {};
@@ -297,6 +370,55 @@ void setup() {
                                                false, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
     lv_timer_handler();
+
+    // Ustawienie layoutu zakładki GPS jako kolumna
+    lv_obj_set_flex_flow(ui_Extras, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ui_Extras, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_top(ui_Extras, 8, LV_PART_MAIN);
+    lv_obj_set_style_pad_left(ui_Extras, 8, LV_PART_MAIN);
+
+    // Tworzenie labeli GPS na zakładce ui_Extras (GPS)
+    gps_label_status = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_status, "GPS Status: Offline");
+    lv_obj_set_style_text_color(gps_label_status, lv_color_hex(0xFF0000), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_status, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    gps_label_lat = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_lat, "LAT: --");
+    lv_obj_set_style_text_color(gps_label_lat, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_lat, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    gps_label_lng = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_lng, "LNG: --");
+    lv_obj_set_style_text_color(gps_label_lng, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_lng, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    gps_label_speed = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_speed, "Speed: --");
+    lv_obj_set_style_text_color(gps_label_speed, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_speed, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    gps_label_alt = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_alt, "Alt: --");
+    lv_obj_set_style_text_color(gps_label_alt, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_alt, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    gps_label_sat = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_sat, "Sat: --");
+    lv_obj_set_style_text_color(gps_label_sat, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_sat, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    gps_label_hdop = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_hdop, "HDOP: --");
+    lv_obj_set_style_text_color(gps_label_hdop, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_hdop, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    gps_label_time = lv_label_create(ui_Extras);
+    lv_label_set_text(gps_label_time, "UTC: --");
+    lv_obj_set_style_text_color(gps_label_time, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(gps_label_time, &lv_font_montserrat_12, LV_PART_MAIN);
+
+    lv_timer_create(update_gps_labels, 1000, nullptr);                // Timer GPS labeli
 
     bar_timer = lv_timer_create(loading_screen, 100, nullptr);         // Timer ładowania
     connection_timer = lv_timer_create(check_connection, 500, nullptr); // Timer sprawdzania połączenia
