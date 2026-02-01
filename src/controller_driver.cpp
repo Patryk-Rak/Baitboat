@@ -293,7 +293,7 @@ void setup() {
     ui_init();
     lv_disp_t* dispp = lv_display_get_default();
     // Nadpisanie koloru motywu na zielony
-    lv_theme_t* theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_GREEN), lv_palette_main(LV_PALETTE_RED),
+    lv_theme_t* theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_AMBER), lv_palette_main(LV_PALETTE_RED),
                                                false, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
     lv_timer_handler();
