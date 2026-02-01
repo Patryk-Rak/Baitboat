@@ -23,8 +23,9 @@ const int SERVO_PIN = 18; // Pin do sterowania serwem (zmień, jeśli używasz i
 // Konfiguracja PWM dla silników
 const int PWM_FREQ = 5000;         // Częstotliwość PWM dla silników (5 kHz)
 const int PWM_RESOLUTION = 8;      // Rozdzielczość PWM dla silników (8 bitów, 0-255)
-const int PWM_CHANNEL_ENA = 0;     // Kanał PWM dla pinu ENA
-const int PWM_CHANNEL_ENB = 1;     // Kanał PWM dla pinu ENB
+// Kanały PWM 0-1 zarezerwowane dla ESP32Servo (servo.attach() używa LEDC od kanału 0)
+const int PWM_CHANNEL_ENA = 2;     // Kanał PWM dla pinu ENA
+const int PWM_CHANNEL_ENB = 3;     // Kanał PWM dla pinu ENB
 const int MIN_PWM = 50;            // Minimalna wartość PWM, aby silniki ruszyły
 const int SMOOTHING_STEP = 10;     // Maksymalna zmiana prędkości na iterację (soft start/end)
 const int UPDATE_INTERVAL = 10;    // Interwał aktualizacji prędkości w ms

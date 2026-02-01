@@ -157,19 +157,17 @@ static void check_connection(lv_timer_t*) {
 
 // Aktualizacja pasków prędkości i wysyłka danych przez ESP-NOW
 static void update_speed_values(lv_timer_t*) {
-    if (!nunchuk.connect()) {
-        lv_label_set_text(ui_BatteryText, "N/A");
+    if (!was_connected || !nunchuk.update()) {
         lv_bar_set_value(ui_SpeedBarUp, 0, LV_ANIM_ON);
         lv_bar_set_value(ui_SpeedBarDown, 0, LV_ANIM_ON);
         lv_bar_set_value(ui_SpeedBarLeft, 0, LV_ANIM_ON);
         lv_bar_set_value(ui_SpeedBarRight, 0, LV_ANIM_ON);
         return;
     }
-    nunchuk.update();
     joy_x = nunchuk.joyX();
     joy_y = nunchuk.joyY();
     trigger = nunchuk.buttonZ();
-    Serial.printf("Raw joyX: %d\nRaw joyY: %d\nTrigger: %s\n", joy_x, joy_y, trigger ? "Pressed" : "Released");
+    // Serial.printf("Raw joyX: %d\nRaw joyY: %d\nTrigger: %s\n", joy_x, joy_y, trigger ? "Pressed" : "Released");
 
     // Mapowanie wartości joysticka na zakres 0-255 z uwzględnieniem martwej strefy
     uint8_t up_value = 0, down_value = 0, left_value = 0, right_value = 0;
@@ -215,8 +213,7 @@ static void update_speed_values(lv_timer_t*) {
     data.left = left_value;
     data.right = right_value;
     data.trigger = trigger;
-    esp_err_t result = esp_now_send(receiverAddress, (uint8_t*)&data, sizeof(data));
-    Serial.println(result == ESP_OK ? "Sent with success" : "Error sending the data");
+    esp_now_send(receiverAddress, (uint8_t*)&data, sizeof(data));
 
     // Obsługa popupu po naciśnięciu triggera
     if (trigger && lv_scr_act() == ui_Menu && !popup) {
@@ -228,11 +225,9 @@ static void update_speed_values(lv_timer_t*) {
         lv_obj_t* label = lv_label_create(popup);
         lv_label_set_text(label, "Trigger pressed");
         lv_obj_center(label);
-        lv_timer_t* popup_timer = lv_timer_create([](lv_timer_t* timer) {
-            lv_obj_del(popup);
-            popup = nullptr;
-            lv_timer_del(timer);
-        }, 2000, nullptr);
+    } else if (!trigger && popup) {
+        lv_obj_del(popup);
+        popup = nullptr;
     }
 }
 
@@ -295,13 +290,17 @@ void setup() {
 
     lv_tick_set_cb(my_tick_get_cb);
 
-    // Inicjalizacja UI i timerów
     ui_init();
+    lv_disp_t* dispp = lv_display_get_default();
+    // Nadpisanie koloru motywu na zielony
+    lv_theme_t* theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_GREEN), lv_palette_main(LV_PALETTE_RED),
+                                               false, LV_FONT_DEFAULT);
+    lv_disp_set_theme(dispp, theme);
     lv_timer_handler();
 
     bar_timer = lv_timer_create(loading_screen, 100, nullptr);         // Timer ładowania
     connection_timer = lv_timer_create(check_connection, 500, nullptr); // Timer sprawdzania połączenia
-    lv_timer_t* speed_timer = lv_timer_create(update_speed_values, 100, nullptr); // Timer pasków prędkości
+    lv_timer_t* speed_timer = lv_timer_create(update_speed_values, 50, nullptr); // Timer pasków prędkości
 
     Serial.println("Setup done");
 }
@@ -311,5 +310,5 @@ void setup() {
 // ============================================================================
 void loop() {
     lv_timer_handler(); // Obsługa timerów LVGL
-    delay(5);           // Krótka pauza dla stabilności
+    delay(1);           // Krótka pauza dla stabilności
 }
