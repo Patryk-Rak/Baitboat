@@ -4,6 +4,8 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <ESP32Servo.h>
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
 
 // ============================================================================
 // Definicje stałych i zmiennych globalnych
@@ -19,6 +21,16 @@ const int IN4_PIN = 15; // Pin kierunku 2 dla silnika prawego
 
 // Piny i konfiguracja dla serwomechanizmu SG90
 const int SERVO_PIN = 18; // Pin do sterowania serwem (zmień, jeśli używasz innego pinu)
+
+// Konfiguracja GPS NEO-6M
+const int GPS_RX_PIN = 16;           // Pin RX dla GPS (podłączony do TX modułu GPS)
+const int GPS_TX_PIN = 17;           // Pin TX dla GPS (podłączony do RX modułu GPS)
+const long GPS_BAUD = 9600;          // Domyślny baudrate NEO-6M
+const unsigned long GPS_PRINT_INTERVAL = 2000; // Interwał wypisywania danych GPS (ms)
+
+TinyGPSPlus gps;
+unsigned long lastGPSPrint = 0;
+unsigned long lastDebugPrint = 0;
 
 // Konfiguracja PWM dla silników
 const int PWM_FREQ = 5000;         // Częstotliwość PWM dla silników (5 kHz)
@@ -145,12 +157,8 @@ void setMotor(int channel, int in1, int in2, int speed) {
 void updateServo() {
     if (receivedData.trigger) {
         servo.write(90);
-        debugServoState(90);
-        Serial.println("Trigger aktywny, servo na 90°");
     } else {
         servo.write(0);
-        debugServoState(0);
-        Serial.println("Trigger nieaktywny, servo na 0°");
     }
 }
 
@@ -164,18 +172,6 @@ void updateServo() {
  */
 void handleReceivedData(const struct_message& msg) {
     receivedData = msg; // Aktualizacja danych
-
-    // Wyświetlanie odebranych danych w monitorze szeregowym
-    Serial.print("Odebrano: up = ");
-    Serial.print(receivedData.up);
-    Serial.print(", down = ");
-    Serial.print(receivedData.down);
-    Serial.print(", left = ");
-    Serial.print(receivedData.left);
-    Serial.print(", right = ");
-    Serial.print(receivedData.right);
-    Serial.print(", trigger = ");
-    Serial.println(receivedData.trigger ? "true" : "false");
 
     // Aktualizacja stanu servo
     updateServo();
@@ -202,8 +198,24 @@ void handleReceivedData(const struct_message& msg) {
     setMotor(PWM_CHANNEL_ENA, IN1_PIN, IN2_PIN, currentSpeed1);
     setMotor(PWM_CHANNEL_ENB, IN3_PIN, IN4_PIN, currentSpeed2);
 
-    // Debugowanie prędkości silników
-    debugMotorSpeeds(baseSpeed, turnAdjust, targetSpeed1, currentSpeed1, targetSpeed2, currentSpeed2);
+    // Wypisywanie debugów co GPS_PRINT_INTERVAL (2s), tak samo jak GPS
+    unsigned long now = millis();
+    if (now - lastDebugPrint >= GPS_PRINT_INTERVAL) {
+        lastDebugPrint = now;
+
+        Serial.print("Odebrano: up = ");
+        Serial.print(receivedData.up);
+        Serial.print(", down = ");
+        Serial.print(receivedData.down);
+        Serial.print(", left = ");
+        Serial.print(receivedData.left);
+        Serial.print(", right = ");
+        Serial.print(receivedData.right);
+        Serial.print(", trigger = ");
+        Serial.println(receivedData.trigger ? "true" : "false");
+
+        debugMotorSpeeds(baseSpeed, turnAdjust, targetSpeed1, currentSpeed1, targetSpeed2, currentSpeed2);
+    }
 }
 
 /**
@@ -226,6 +238,64 @@ void OnDataRecv(const uint8_t* mac_addr, const uint8_t* data, int len) {
 }
 
 // ============================================================================
+// Funkcja GPS
+// ============================================================================
+
+/**
+ * Odczytuje dane z modułu GPS NEO-6M i co GPS_PRINT_INTERVAL ms wypisuje je na Serial
+ */
+void readGPS() {
+    while (Serial2.available() > 0) {
+        gps.encode(Serial2.read());
+    }
+
+    unsigned long now = millis();
+    if (now - lastGPSPrint >= GPS_PRINT_INTERVAL) {
+        lastGPSPrint = now;
+
+        Serial.println("--- GPS ---");
+
+        if (gps.location.isValid()) {
+            Serial.print("LAT: ");
+            Serial.print(gps.location.lat(), 6);
+            Serial.print("  LONG: ");
+            Serial.println(gps.location.lng(), 6);
+        } else {
+            Serial.println("Lokalizacja: brak danych");
+        }
+
+        if (gps.speed.isValid()) {
+            Serial.print("Predkosc: ");
+            Serial.print(gps.speed.kmph(), 1);
+            Serial.println(" km/h");
+        }
+
+        if (gps.altitude.isValid()) {
+            Serial.print("Wysokosc: ");
+            Serial.print(gps.altitude.meters(), 1);
+            Serial.println(" m");
+        }
+
+        if (gps.hdop.isValid()) {
+            Serial.print("HDOP: ");
+            Serial.println(gps.hdop.hdop(), 1);
+        }
+
+        if (gps.satellites.isValid()) {
+            Serial.print("Satelity: ");
+            Serial.println(gps.satellites.value());
+        }
+
+        if (gps.time.isValid()) {
+            Serial.printf("Czas UTC: %02d:%02d:%02d\n",
+                gps.time.hour(), gps.time.minute(), gps.time.second());
+        }
+
+        Serial.println("--- --- ---");
+    }
+}
+
+// ============================================================================
 // Funkcje główne Arduino
 // ============================================================================
 
@@ -235,6 +305,10 @@ void OnDataRecv(const uint8_t* mac_addr, const uint8_t* data, int len) {
 void setup() {
     // Inicjalizacja komunikacji szeregowej
     Serial.begin(115200);
+
+    // Inicjalizacja GPS na Serial2
+    Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    Serial.println("GPS NEO-6M zainicjalizowany na Serial2");
 
     // Konfiguracja pinów sterownika DRI0041 jako wyjścia
     pinMode(IN1_PIN, OUTPUT);
@@ -276,6 +350,9 @@ void setup() {
  * Główna pętla programu
  */
 void loop() {
+    // Odczyt danych GPS (musi być wywoływany często)
+    readGPS();
+
     // Opóźnienie dla stabilności
     delay(UPDATE_INTERVAL);
 }
